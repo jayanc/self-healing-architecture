@@ -1,0 +1,6 @@
+PyYAML>=5.0
+google-cloud-bigquery>=2.0
+google-cloud-storage>=1.0
+tenacity>=8.0
+pytest>=6.0
+pytest-mock>=3.0

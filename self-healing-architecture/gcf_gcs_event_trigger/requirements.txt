@@ -1,0 +1,15 @@
+# This GCF requires specific Google Cloud client libraries for the services it directly initializes
+# and PyYAML for configuration management.
+# It assumes that the 'src' directory (containing handlers and core logic) is deployed
+# alongside this function or made available in its Python path.
+# Dependencies from the main project's requirements.txt that are used by the imported
+# modules (like 'tenacity' by handlers) must also be available in the GCF environment.
+
+PyYAML>=5.0
+google-cloud-bigquery>=2.0  # For BigQueryLogger and BigQueryDatabaseHandler
+google-cloud-storage>=1.0   # For GCSStorageHandler
+
+# Note: If deploying the entire 'self-healing-architecture' project as a package,
+# the main requirements.txt would cover these. For a standalone GCF deployment
+# that copies only necessary parts or has 'src' as a separate layer, these explicit
+# declarations are important. 'tenacity' would be needed if handlers are packaged.
