@@ -1,0 +1,270 @@
+# policy_config.yaml
+# This file configures the behavior of the Data Pipeline Self-Healing Framework.
+# It works in conjunction with POLICY.md, which describes the strategies and procedures.
+
+# --- Global Settings ---
+global_settings:
+  log_level: "INFO"  # Standard Python log levels (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+  max_concurrent_heal_actions: 5 # Limits how many major healing actions can run simultaneously
+  # Correlation ID header name to be used when interacting with other services/APIs
+  correlation_id_http_header: "X-Correlation-ID"
+
+# --- Data Source Specific Configurations ---
+# Configurations can be defined per data source or use a default.
+# Replace 'your_source_system_id' with an actual identifier for a source.
+data_sources:
+  default: # Default settings for any source not explicitly defined
+    retry_attempts: 3
+    base_retry_delay_seconds: 60  # Initial delay for retries
+    max_retry_delay_seconds: 300  # Maximum delay for exponential backoff
+    # Optional: if the source provides a health/status check endpoint
+    # status_endpoint: "https://api.default-vendor.com/health"
+    # Optional: if a failover/secondary endpoint is available
+    # failover_endpoint: "https://api.backup-default-vendor.com/data"
+  your_source_system_id: # Example of a specific data source configuration
+    retry_attempts: 5
+    base_retry_delay_seconds: 30
+    max_retry_delay_seconds: 180
+    status_endpoint: "https://api.specific-vendor.com/status"
+    # Example of source-specific API key or token (consider using a secrets manager in production)
+    # api_key_secret_name: "projects/my-gcp-project/secrets/source_specific_vendor_api_key/versions/latest"
+    # If this specific source uses CDC, its specific CDC settings could be nested here
+    # cdc_settings:
+    #   connector_restart_attempts: 4
+    #   max_replication_lag_minutes_for_alert: 60
+
+# --- Ingestion Pattern Specific Configurations ---
+ingestion_settings:
+  cdc: # Default Change Data Capture settings (can be overridden per data_source)
+    connector_restart_attempts: 3
+    connector_retry_delay_seconds: 60
+    # Attempt to automatically apply non-breaking schema changes downstream
+    auto_schema_update_non_breaking: false
+    # Alert if replication lag exceeds this threshold
+    max_replication_lag_minutes_for_alert: 120
+    # Keywords in CDC connector logs that should trigger immediate escalation
+    critical_error_keywords_for_escalation: ["FATAL", "Unrecoverable", "CorruptLog", "ReplicationSlotInvalidated"]
+    # Example: specific setting for a known CDC source type if not in data_sources
+    # mysql_debezium:
+    #   max_replication_lag_minutes_for_alert: 90
+
+  streaming: # Default Streaming Ingestion settings
+    job_retry_attempts: 5
+    job_retry_delay_seconds: 30 # Base delay for retries
+    # Number of times to attempt processing a message before considering it a "poison pill"
+    poison_pill_threshold_attempts: 3
+    # Pub/Sub topic or Kafka topic for messages that fail repeatedly
+    dlq_topic_name: "projects/your-gcp-project-id/topics/your-stream-processing-dlq"
+    # Enable alerts related to autoscaling events of the streaming job
+    enable_autoscaling_alerts: true
+    # Allow automated reprocessing from a specific offset/timestamp (use with extreme caution)
+    allow_automated_reprocessing_from_offset: false
+    # Alert if consumer lag for Pub/Sub subscriptions exceeds this value
+    # pubsub_max_ack_extension_period_seconds_alert_threshold: 3600 # Example for Pub/Sub
+    # kafka_max_consumer_lag_messages_alert_threshold: 10000 # Example for Kafka
+
+  incremental_load: # Default Incremental Load settings
+    batch_retry_attempts: 2
+    # Delay before retrying if source data for the current window is not ready
+    source_data_not_ready_delay_seconds: 300
+    # Strategy for handling errors in an incremental batch
+    # Options: "RETRY_ONLY", "SKIP_BATCH_AND_ALERT", "ISOLATE_BAD_RECORDS" (if feasible)
+    error_handling_strategy: "SKIP_BATCH_AND_ALERT"
+    # Link to playbook for manual correction of incremental load issues
+    manual_correction_playbook_link: "http://internal.wiki.com/playbooks/incremental-load-correction"
+    # Alert if watermark drift exceeds a certain threshold (e.g. time or number of records)
+    # watermark_drift_time_threshold_minutes: 60
+    # watermark_drift_record_count_threshold: 1000
+
+  deduplication: # Default Deduplication Process settings
+    job_retry_attempts: 3
+    # Enable attempting to increase resources for the deduplication job on failure
+    resource_increase_on_failure_enabled: false # Requires specific implementation logic
+    # GCS path for data that consistently fails deduplication logic but is otherwise valid
+    manual_review_gcs_path: "gs://your-project-id-dedup-manual-review/"
+    # Alert if the volume of data moved to manual review exceeds a threshold
+    # manual_review_volume_threshold_gb_per_day: 1
+
+# --- Google Cloud Storage (GCS) Configurations ---
+gcs_settings:
+  bronze_layer: # Settings for operations related to the Bronze layer
+    upload_retry_attempts: 3
+    base_retry_delay_seconds: 10
+    max_retry_delay_seconds: 60
+    # Bucket for files that consistently fail ingestion or validation at Bronze
+    dead_letter_bucket: "gs://your-project-id-bronze-dlq/"
+    # Whether to perform checksum validation after upload if source provides checksums
+    verify_checksums: true
+  silver_layer: # Settings for GCS operations related to Silver (e.g., temp files for BQ loads)
+    default_retry_attempts: 2
+    base_retry_delay_seconds: 5
+    max_retry_delay_seconds: 30
+
+# --- BigQuery Configurations ---
+bigquery_settings:
+  # Common settings for all BigQuery job types unless overridden
+  default_job_settings:
+    job_retry_attempts: 2 # Default retries for generic BQ job failures
+    base_retry_delay_seconds: 30
+    max_retry_delay_seconds: 120
+    # Default BigQuery location for jobs if not specified elsewhere
+    default_location: "US"
+
+  silver_layer:
+    job_retry_attempts: 3
+    base_retry_delay_seconds: 60
+    max_retry_delay_seconds: 240
+    # DLQ for records failing to load or transform into Silver
+    # Can be a GCS path for rejected records or a BQ table
+    dlq_gcs_path: "gs://your-project-id-silver-dlq/rejected_records/"
+    dlq_table: "your_project_id.your_dataset_silver_dlq.failed_records"
+    # Option to enable BigQuery snapshot rollbacks for failed transformations
+    enable_snapshot_rollbacks: true # Requires tables to be configured with snapshot capabilities
+
+  gold_layer:
+    job_retry_attempts: 2
+    base_retry_delay_seconds: 120
+    max_retry_delay_seconds: 300
+    # DLQ for records failing to load or transform into Gold, or failing critical DQ checks
+    dlq_table: "your_project_id.your_dataset_gold_dlq.failed_records"
+    data_quality:
+      # Default criticality for DQ check failures (WARNING or CRITICAL)
+      default_alert_criticality: "WARNING"
+      # Action to take on DQ failure:
+      # HALT_AND_ALERT: Stop processing for the affected data, alert.
+      # FLAG_DATA: Process data but flag it as low quality.
+      # REPROCESS_SILVER: Attempt to reprocess from Silver layer if applicable.
+      dq_failure_action: "HALT_AND_ALERT"
+      # Specific rules can override default criticality and action
+      rules:
+        - rule_name: "check_primary_key_nulls_customers_table"
+          alert_criticality: "CRITICAL"
+          failure_action: "HALT_AND_ALERT"
+        - rule_name: "check_revenue_sum_consistency"
+          alert_criticality: "WARNING"
+          failure_action: "FLAG_DATA"
+
+# --- Alerting Configurations ---
+alerting:
+  # Default provider to use if not specified per alert type
+  default_provider: "slack" # Options: "slack", "pagerduty", "email", "none"
+  providers:
+    slack:
+      # For multiple channels, define them and refer by key e.g., "slack_data_alerts_critical"
+      default_webhook_url_secret: "projects/my-gcp-project/secrets/slack_webhook_default/versions/latest" # Store actual URL in Secret Manager
+      channels:
+        data_alerts_critical: "projects/my-gcp-project/secrets/slack_webhook_critical/versions/latest"
+        data_alerts_warning: "projects/my-gcp-project/secrets/slack_webhook_warning/versions/latest"
+        data_alerts_info: "projects/my-gcp-project/secrets/slack_webhook_info/versions/latest"
+    pagerduty:
+      # Store PagerDuty integration/routing keys in Secret Manager
+      default_routing_key_secret: "projects/my-gcp-project/secrets/pagerduty_default_key/versions/latest"
+      service_keys: # For different PagerDuty services
+        critical_data_pipeline: "projects/my-gcp-project/secrets/pagerduty_critical_pipeline_key/versions/latest"
+    email:
+      default_sender: "data-pipeline-noreply@example.com"
+      default_recipients: ["data-engineering-alerts@example.com"]
+      critical_recipients: ["data-engineering-oncall@example.com", "data-team-lead@example.com"]
+      smtp_server: "smtp.example.com" # Or use a service like SendGrid/Mailgun via API
+      smtp_port: 587
+      # smtp_user_secret: "projects/my-gcp-project/secrets/smtp_user/versions/latest"
+      # smtp_password_secret: "projects/my-gcp-project/secrets/smtp_password/versions/latest"
+
+  # Thresholds for various alerts
+  thresholds:
+    # Dead Letter Queue Monitoring
+    dlq_max_size_gb_alert_threshold: 10 # Alert if any DLQ exceeds this size
+    dlq_growth_rate_records_per_hour_alert_threshold: 1000 # Alert if DLQ grows faster than this
+    dlq_record_age_alert_threshold_hours: 24 # Alert if records stay in DLQ for too long
+
+    # Self-Healing System Monitoring
+    # Alert if a specific self-healing rule triggers too frequently, indicating underlying instability
+    self_healing_trigger_frequency_alert_threshold_per_day: 10
+    # Alert if automated recovery actions fail too often
+    automated_recovery_failure_rate_threshold_percentage: 25 # (e.g., 25% of attempts fail over a period)
+    automated_recovery_failure_evaluation_window_minutes: 60
+
+    # BigQuery Specific Job Metrics
+    bq_job_error_rate_threshold_percentage: 10 # Alert if BQ job error rate exceeds this
+    bq_job_error_rate_evaluation_window_minutes: 30
+    bq_job_duration_increase_percentage_threshold: 50 # Alert if job duration increases by X% over baseline
+    bq_job_duration_baseline_days: 7 # Number of days to calculate baseline duration
+
+# --- Tracking and Logging Specific Configurations ---
+tracking_and_logging:
+  # BigQuery table for logging all policy execution events and self-healing actions
+  policy_execution_log_table_id: "your_gcp_project.your_dataset_operational.policy_execution_log"
+  
+  # BigQuery table for tracking the status and metadata of end-to-end data flows
+  data_flow_log_table_id: "your_gcp_project.your_dataset_operational.data_flow_log"
+
+  # (Optional) Default Google Cloud Logging link prefix if needed for constructing full URLs
+  # This helps in creating direct links to logs from dashboards or alerts.
+  # Example: cloud_logging_base_url: "https://console.cloud.google.com/logs/viewer?project=your_gcp_project&query="
+
+# --- Error Pattern Mapping for Enhanced Diagnosis (Optional) ---
+# This section can help map raw error messages to structured information and hints.
+# The Python framework would need logic to parse and use these patterns.
+error_patterns:
+  bigquery:
+    - pattern: '.*Quota exceeded: BigQuery API.*Jobs per day.*'
+      diagnostic_hint: "Daily quota for BigQuery API job operations exceeded. Review project quotas and usage patterns. Consider requesting an increase or optimizing job submissions."
+      default_severity: "CRITICAL" # This error usually stops new work
+      playbook_link: "http://internal.wiki.com/bq-quota-errors#jobs-per-day"
+    - pattern: '.*Table not found: (?P<project_id>[^.]+)\.(?P<dataset_id>[^.]+)\.(?P<table_id>[^\s]+).*'
+      diagnostic_hint: "Table not found. Verify table name, dataset, and project. Check if table was dropped, schema migration failed, or if there are typos in the query."
+      default_severity: "WARNING" # Could be critical depending on the table
+      playbook_link: "http://internal.wiki.com/bq-table-not-found"
+    - pattern: '.*Resources exceeded during query execution: Not enough resources for query.*'
+      diagnostic_hint: "Query is too complex or consuming too many resources. Optimize the query, consider using clustered/partitioned tables, or review slot allocation."
+      default_severity: "WARNING"
+      playbook_link: "http://internal.wiki.com/bq-resources-exceeded"
+  gcs:
+    - pattern: '.*403 Forbidden.*Caller does not have storage\.objects\.get access.*'
+      diagnostic_hint: "GCS permission denied. Service account or user lacks 'storage.objects.get' permission on the specified bucket/object. Review IAM policies."
+      default_severity: "CRITICAL"
+      playbook_link: "http://internal.wiki.com/gcs-permission-denied"
+
+# --- Root Cause Analysis (RCA) Process Support ---
+rca_settings:
+  # Link to the standard RCA template document
+  rca_template_link: "http://internal.wiki.com/templates/data_pipeline_rca_template_v1.docx"
+  # Link to the system used for tracking action items from RCAs
+  rca_action_item_tracking_tool: "https://your-company.jira.com/browse/DATAPLATFORM"
+  # Default list of stakeholders to notify or include in RCA discussions for P1 incidents
+  default_p1_rca_stakeholders:
+    - "data-engineering-lead@example.com"
+    - "product-manager-data@example.com"
+
+# --- Simulated Failure Tests (for Chaos Engineering / Fire Drills) ---
+# This is an advanced section. The Python framework would need specific capabilities
+# to interpret and execute these simulated tests.
+simulated_failure_tests:
+  - name: "gcs_read_transient_error_bronze_ingest_job_X"
+    description: "Simulate GCS read timeout for a specific bronze ingestion job."
+    enabled: true # Allows easily enabling/disabling tests
+    target_type: "JOB_ID" # or "SERVICE_NAME", "PIPELINE_STAGE"
+    target_identifier: "bronze_ingestion_job_X"
+    failure_simulation_details:
+      service_to_affect: "GCS"
+      operation_to_affect: "READ_OBJECT" # e.g. READ_OBJECT, WRITE_OBJECT, LIST_BUCKET
+      error_type_to_inject: "TIMEOUT" # e.g. TIMEOUT, PERMISSION_DENIED, NOT_FOUND, CUSTOM_ERROR_CODE
+      # custom_error_code: "503 Service Unavailable" # if error_type_to_inject is CUSTOM_ERROR_CODE
+      injection_probability_percentage: 100 # How often to inject when this test runs
+      duration_seconds: 300 # How long the failure simulation should last when active
+    expected_self_healing_outcome:
+      action: "RETRY_WITH_SUCCESS_WITHIN_ATTEMPTS" # e.g., RETRY_SUCCESSFUL, DLQ_MOVE, ALERT_TRIGGERED
+      max_retry_attempts_expected: 3
+      # alert_details_expected: # If expected outcome is an alert
+      #   severity: "WARNING"
+      #   message_contains: "GCS read timeout"
+    # Schedule for running this test (e.g., cron expression, or "manual_only")
+    # schedule: "0 2 * * TUE" # Example: Every Tuesday at 2 AM
+    # notification_channel_for_test_results: "slack_data_ops_channel"
+
+# --- Policy Versioning ---
+# Helps track which version of the policy document this config aligns with.
+policy_document_version: "1.0.0" # Should correspond to the version of POLICY.md
+config_version: "1.2.0" # Incremented as this config file changes
+last_updated: "2024-03-17" # Date of last update
+updated_by: "Data Engineering Team (Self-Healing Initiative)"
